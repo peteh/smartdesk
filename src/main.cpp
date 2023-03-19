@@ -8,6 +8,7 @@
 
 #include "utils.h"
 #include "config.h"
+#include "desk.h"
 
 #define INPUT_UP 8
 #define INPUT_DOWN 9
@@ -23,9 +24,7 @@
 
 bool g_inputUp = false;
 bool g_inputDown = false;
-
-bool g_outputUp = false;
-bool g_outputDown = false;
+Desk g_desk(OUTPUT_UP, OUTPUT_DOWN);
 
 double g_targetHeightCm = 80.;
 double g_sensorHeightCm = 60.;
@@ -40,30 +39,7 @@ const char *HOMEASSISTANT_STATUS_TOPIC_ALT = "ha/status";
 MqttDevice mqttDevice(composeClientID().c_str(), "Smart Desk", "Smart Desk Control OMT", "maker_pt");
 MqttText mqttTargetHeight(&mqttDevice, "desktargetheight", "Target Height");
 
-void moveUp()
-{
-  g_outputUp = true;
-  g_outputDown = false;
-  digitalWrite(OUTPUT_UP, g_outputUp);
-  digitalWrite(OUTPUT_DOWN, g_outputDown);
-}
 
-void stop()
-{
-  log_info("Desk Stop!");
-  g_outputUp = false;
-  g_outputDown = false;
-  digitalWrite(OUTPUT_UP, g_outputUp);
-  digitalWrite(OUTPUT_DOWN, g_outputDown);
-}
-
-void moveDown()
-{
-  g_outputUp = false;
-  g_outputDown = true;
-  digitalWrite(OUTPUT_UP, g_outputUp);
-  digitalWrite(OUTPUT_DOWN, g_outputDown);
-}
 
 double readSensor()
 {
@@ -88,27 +64,6 @@ void setNewTarget(double newTargetCm)
   log_info("New target height: %.2f", newTargetCm);
   g_targetHeightCm = newTargetCm;
   g_control = true;
-}
-
-bool control(double sensor, double target)
-{
-  double distance = g_targetHeightCm - sensor;
-  if (abs(distance) < TARGET_ACCURACY_CM)
-  {
-    g_control = false;
-    log_info("Reached target position (target: %.2fcm, is: %.2f)", g_targetHeightCm, sensor);
-    stop();
-    return true;
-  }
-  else if (distance > 0) // need to go up
-  {
-    moveUp();
-  }
-  else if (distance < 0) // need to go down
-  {
-    moveDown();
-  }
-  return false;
 }
 
 void publishMqttState(MqttEntity *device, const char *state)
@@ -225,11 +180,8 @@ void setup()
   pinMode(INPUT_UP, INPUT_PULLDOWN);
   pinMode(INPUT_DOWN, INPUT_PULLDOWN);
 
-  pinMode(OUTPUT_UP, OUTPUT);
-  pinMode(OUTPUT_DOWN, OUTPUT);
-
-  digitalWrite(OUTPUT_UP, g_outputUp);
-  digitalWrite(OUTPUT_DOWN, g_outputUp);
+  g_desk.begin();
+  
   WiFi.mode(WIFI_STA);
   WiFi.hostname(composeClientID().c_str());
   WiFi.begin(wifi_ssid, wifi_pass);
@@ -308,13 +260,15 @@ void loop()
   {
     log_info("Up pressed: %d", inputUp);
     g_inputUp = inputUp;
+    // stop Controlling the table
+    g_control = false;
     if (g_inputUp)
     {
-      moveUp();
+      g_desk.moveUp();
     }
     else
     {
-      stop();
+      g_desk.stop();
     }
   }
   bool inputDown = digitalRead(INPUT_DOWN);
@@ -322,13 +276,15 @@ void loop()
   {
     log_info("Down pressed: %d", inputDown);
     g_inputDown = inputDown;
+    // stop Controlling the table
+    g_control = false;
     if (g_inputDown)
     {
-      moveDown();
+      g_desk.moveDown();
     }
     else
     {
-      stop();
+      g_desk.stop();
     }
   }
 
@@ -336,7 +292,7 @@ void loop()
   {
     // TODO: read sensor value every x seconds and stop movement if not moving anymore
     double sensor = readSensor();
-    if (control(sensor, g_targetHeightCm))
+    if (g_desk.control(sensor, g_targetHeightCm))
     {
       // target position reached
       log_info("Reached target position");
