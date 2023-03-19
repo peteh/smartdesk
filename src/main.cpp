@@ -40,6 +40,15 @@ struct Config
 
 Config g_config = {0, 0, 0};
 
+enum Preset{
+  NONE, 
+  PRESET1, 
+  PRESET2, 
+  PRESET3
+};
+
+Preset g_preset = Preset::NONE; 
+
 WiFiClient net;
 PubSubClient client(net);
 
@@ -144,6 +153,27 @@ void saveSettings()
 
     // Close the file
     file.close();
+}
+
+void publishMqttPreset(MqttEntity *device, Preset preset)
+{
+  if(preset == Preset::NONE)
+  {
+    client.publish(device->getStateTopic(), "None");
+  }
+  else if(preset == Preset::PRESET1)
+  {
+    client.publish(device->getStateTopic(), "1");
+  }
+  else if(preset == Preset::PRESET2)
+  {
+    client.publish(device->getStateTopic(), "2");
+  }
+  else if(preset == Preset::PRESET3)
+  {
+    client.publish(device->getStateTopic(), "3");
+  }
+  
 }
 
 void publishMqttState(MqttEntity *device, const char *state)
@@ -308,6 +338,23 @@ void connectToWifi()
   log_info("Wifi connected!");
 }
 
+Preset calculatePreset(double sensorCm)
+{
+  if(abs(g_config.preset1 - sensorCm) < g_desk.getTargetAccuracyCm())
+  {
+    return Preset::PRESET1;
+  }
+  if(abs(g_config.preset2 - sensorCm) < g_desk.getTargetAccuracyCm())
+  {
+    return Preset::PRESET2;
+  }
+  if(abs(g_config.preset3 - sensorCm) < g_desk.getTargetAccuracyCm())
+  {
+    return Preset::PRESET3;
+  }
+  return Preset::NONE;
+}
+
 void setup()
 {
   mqttHeight.setPattern("[0-9]+");
@@ -425,7 +472,14 @@ void loop()
   if (g_control)
   {
     // TODO: read sensor value every x seconds and stop movement if not moving anymore
+    // TODO: update preset also when moving with buttons
     double sensorCm = readSensor();
+    Preset preset = calculatePreset(sensorCm);
+    if(preset != g_preset)
+    {
+      g_preset = preset;
+      publishMqttPreset(&mqttPreset, g_preset);
+    }
     if (g_desk.controlLoop(sensorCm, g_targetHeightCm))
     {
       // target position reached

@@ -14,6 +14,10 @@ public:
     void moveUp();
     void moveDown();
     bool controlLoop(const double sensor, const double target);
+    double getTargetAccuracyCm()
+    {
+        return m_targetAccuracyCm;
+    }
 
 private:
     const uint8_t m_outputUp;
