@@ -13,7 +13,7 @@ public:
     void stop();
     void moveUp();
     void moveDown();
-    bool control(double sensor, double target);
+    bool controlLoop(const double sensor, const double target);
 
 private:
     const uint8_t m_outputUp;

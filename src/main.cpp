@@ -5,6 +5,7 @@
 #include <ArduinoOTA.h>
 #include <MqttDevice.h>
 #include <esplog.h>
+#include <LittleFS.h>
 
 #include "utils.h"
 #include "config.h"
@@ -30,6 +31,15 @@ double g_targetHeightCm = 80.;
 double g_sensorHeightCm = 60.;
 bool g_control = false;
 
+struct Config
+{
+  uint16_t preset1;
+  uint16_t preset2;
+  uint16_t preset3;
+};
+
+Config g_config = {0, 0, 0};
+
 WiFiClient net;
 PubSubClient client(net);
 
@@ -37,9 +47,22 @@ const char *HOMEASSISTANT_STATUS_TOPIC = "homeassistant/status";
 const char *HOMEASSISTANT_STATUS_TOPIC_ALT = "ha/status";
 
 MqttDevice mqttDevice(composeClientID().c_str(), "Smart Desk", "Smart Desk Control OMT", "maker_pt");
-MqttText mqttTargetHeight(&mqttDevice, "desktargetheight", "Target Height");
+MqttText mqttHeight(&mqttDevice, "height", "Desk Height");
+MqttSelect mqttPreset(&mqttDevice, "preset", "Desk Preset");
+MqttText mqttConfigPreset1(&mqttDevice, "preset1", "Desk Preset 1");
+MqttText mqttConfigPreset2(&mqttDevice, "preset2", "Desk Preset 2");
+MqttText mqttConfigPreset3(&mqttDevice, "preset3", "Desk Preset 3");
 
+#define CONFIG_FILENAME "/config.txt"
 
+bool formatLittleFS()
+{
+  log_warn("need to format LittleFS: ");
+  LittleFS.end();
+  LittleFS.begin();
+  log_info("Success: %d", LittleFS.format());
+  return LittleFS.begin();
+}
 
 double readSensor()
 {
@@ -51,7 +74,7 @@ double readSensor()
   delayMicroseconds(10);
   digitalWrite(SENSOR_TRIGGER, LOW);
   // Reads the echoPin, returns the sound wave travel time in microseconds
-  long duration = pulseIn(SENSOR_ECHO, HIGH, 1*1000*1000);
+  long duration = pulseIn(SENSOR_ECHO, HIGH, 1 * 1000 * 1000);
   // Calculating the distance
   double distance = duration * 0.034 / 2.;
   // TODO: remove fake value
@@ -66,14 +89,71 @@ void setNewTarget(double newTargetCm)
   g_control = true;
 }
 
+void loadSettings()
+{
+  // Open file for reading
+  // TODO: check if file exists
+  File file = LittleFS.open(CONFIG_FILENAME, "r");
+
+  // Allocate a temporary JsonDocument
+  // Don't forget to change the capacity to match your requirements.
+  // Use arduinojson.org/v6/assistant to compute the capacity.
+  StaticJsonDocument<1024> doc;
+
+  // Deserialize the JSON document
+  DeserializationError error = deserializeJson(doc, file);
+  if (error)
+  {
+    log_error(F("Failed to read file, using default configuration"));
+  }
+
+  // Copy values from the JsonDocument to the Config
+  g_config.preset1 = doc["preset1"] | g_config.preset1;
+  g_config.preset2 = doc["preset2"] | g_config.preset2;
+  g_config.preset3 = doc["preset3"] | g_config.preset3;
+
+  // Close the file (Curiously, File's destructor doesn't close the file)
+  file.close();
+}
+
+
+void saveSettings()
+{
+    // Open file for writing
+    File file = LittleFS.open(CONFIG_FILENAME, "w");
+    if (!file)
+    {
+        log_error("Failed to create config file");
+        return;
+    }
+    // Allocate a temporary JsonDocument
+    // Don't forget to change the capacity to match your requirements.
+    // Use arduinojson.org/assistant to compute the capacity.
+    StaticJsonDocument<1024> doc;
+
+    // Set the values in the document
+    doc["preset1"] = g_config.preset1;
+    doc["preset2"] = g_config.preset2;
+    doc["preset3"] = g_config.preset3;
+
+    // Serialize JSON to file
+    if (serializeJson(doc, file) == 0)
+    {
+        log_error("Failed to write config to file");
+    }
+
+    // Close the file
+    file.close();
+}
+
 void publishMqttState(MqttEntity *device, const char *state)
 {
   client.publish(device->getStateTopic(), state);
 }
 
-void publishMqttState(MqttEntity *device, const int32_t state)
+void publishMqttState(MqttEntity *device, const int16_t state)
 {
-  char buffer[20];
+  char buffer[8];
   snprintf(buffer, sizeof(buffer), "%d", state);
   publishMqttState(device, buffer);
 }
@@ -92,19 +172,29 @@ void publishConfig(MqttEntity *device)
 
 void publishConfig()
 {
-  publishConfig(&mqttTargetHeight);
+  publishConfig(&mqttHeight);
+  publishConfig(&mqttPreset);
+  publishConfig(&mqttConfigPreset1);
+  publishConfig(&mqttConfigPreset2);
+  publishConfig(&mqttConfigPreset3);
 
   delay(1000);
+
+  // TODO state of preset
+
   // publish all initial states
-  publishMqttState(&mqttTargetHeight, (uint32_t)g_sensorHeightCm);
+  publishMqttState(&mqttHeight, (uint16_t)g_sensorHeightCm);
+  publishMqttState(&mqttConfigPreset1, g_config.preset1);
+  publishMqttState(&mqttConfigPreset2, g_config.preset2);
+  publishMqttState(&mqttConfigPreset3, g_config.preset3);
 }
 
-uint32_t parseValue(const char *data, unsigned int length)
+uint16_t parseValue(const char *data, unsigned int length)
 {
   // TODO length check
   char temp[32];
   strncpy(temp, data, length);
-  return (uint32_t)strtoul(temp, NULL, 10);
+  return (uint16_t)strtoul(temp, NULL, 10);
 }
 
 void callback(char *topic, byte *payload, unsigned int length)
@@ -116,10 +206,58 @@ void callback(char *topic, byte *payload, unsigned int length)
   }
   Serial.println();
 
-  if (strcmp(topic, mqttTargetHeight.getCommandTopic()) == 0)
+  if (strcmp(topic, mqttHeight.getCommandTopic()) == 0)
   {
-    uint32_t data = parseValue((char *)payload, length);
+    uint16_t data = parseValue((char *)payload, length);
     setNewTarget(data);
+  }
+  if (strcmp(topic, mqttPreset.getCommandTopic()) == 0)
+  {
+    if (strncmp((char *)payload, "None", length) == 0)
+    {
+      log_info("Received None Preset - do nothing");
+    }
+    else if(strncmp((char *)payload, "1", length) == 0)
+    {
+      log_info("Received Preset 1");
+      setNewTarget((double)g_config.preset1);
+    }
+    else if(strncmp((char *)payload, "2", length) == 0)
+    {
+      log_info("Received Preset 2");
+      setNewTarget((double)g_config.preset2);
+    }
+    else if(strncmp((char *)payload, "3", length) == 0)
+    {
+      log_info("Received Preset 3");
+      setNewTarget((double)g_config.preset3);
+    }
+    //uint16_t data = parseValue((char *)payload, length);
+    //setNewTarget(data);
+  }
+  else if (strcmp(topic, mqttConfigPreset1.getCommandTopic()) == 0)
+  {
+    uint16_t data = parseValue((char *)payload, length);
+    g_config.preset1 = data;
+    log_info("Setting Preset 1 to '%d'", g_config.preset1);
+    saveSettings();
+    publishMqttState(&mqttConfigPreset1, g_config.preset1);
+  }
+  else if (strcmp(topic, mqttConfigPreset2.getCommandTopic()) == 0)
+  {
+    uint16_t data = parseValue((char *)payload, length);
+    g_config.preset2 = data;
+    log_info("Setting Preset 2 to '%d'", g_config.preset2);
+    saveSettings();
+    publishMqttState(&mqttConfigPreset2, g_config.preset2);
+  }
+  else if (strcmp(topic, mqttConfigPreset3.getCommandTopic()) == 0)
+  {
+    uint16_t data = parseValue((char *)payload, length);
+    g_config.preset3 = data;
+    log_info("Setting Preset 3 to '%d'", g_config.preset3);
+    saveSettings();
+    publishMqttState(&mqttConfigPreset3, g_config.preset3);
   }
 
   // publish config when homeassistant comes online and needs the configuration again
@@ -144,7 +282,11 @@ void connectToMqtt()
     delay(4000);
   }
 
-  client.subscribe(mqttTargetHeight.getCommandTopic(), 1);
+  client.subscribe(mqttHeight.getCommandTopic(), 1);
+  client.subscribe(mqttPreset.getCommandTopic(), 1);
+  client.subscribe(mqttConfigPreset1.getCommandTopic(), 1);
+  client.subscribe(mqttConfigPreset2.getCommandTopic(), 1);
+  client.subscribe(mqttConfigPreset3.getCommandTopic(), 1);
 
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
@@ -168,9 +310,29 @@ void connectToWifi()
 
 void setup()
 {
-  mqttTargetHeight.setPattern("[0-9]+");
-  mqttTargetHeight.setMaxLetters(3);
-  mqttTargetHeight.setIcon("mdi:desk");
+  mqttHeight.setPattern("[0-9]+");
+  mqttHeight.setMaxLetters(3);
+  mqttHeight.setIcon("mdi:desk");
+
+  mqttPreset.addOption("None");
+  mqttPreset.addOption("1");
+  mqttPreset.addOption("2");
+  mqttPreset.addOption("3");
+
+  mqttConfigPreset1.setPattern("[0-9]+");
+  mqttConfigPreset1.setMaxLetters(3);
+  mqttConfigPreset1.setIcon("mdi:desk");
+  mqttConfigPreset1.setEntityType(EntityCategory::CONFIG);
+
+  mqttConfigPreset2.setPattern("[0-9]+");
+  mqttConfigPreset2.setMaxLetters(3);
+  mqttConfigPreset2.setIcon("mdi:desk");
+  mqttConfigPreset2.setEntityType(EntityCategory::CONFIG);
+
+  mqttConfigPreset3.setPattern("[0-9]+");
+  mqttConfigPreset3.setMaxLetters(3);
+  mqttConfigPreset3.setIcon("mdi:desk");
+  mqttConfigPreset3.setEntityType(EntityCategory::CONFIG);
 
   Serial.begin(115200);
 
@@ -180,8 +342,23 @@ void setup()
   pinMode(INPUT_UP, INPUT_PULLDOWN);
   pinMode(INPUT_DOWN, INPUT_PULLDOWN);
 
+  if (!LittleFS.begin())
+  {
+    log_error("Failed to mount file system");
+    delay(5000);
+    if (!formatLittleFS())
+    {
+      log_error("Failed to format file system - hardware issues!");
+      for (;;)
+      {
+        delay(100);
+      }
+    }
+  }
+  loadSettings();
+
   g_desk.begin();
-  
+
   WiFi.mode(WIFI_STA);
   WiFi.hostname(composeClientID().c_str());
   WiFi.begin(wifi_ssid, wifi_pass);
@@ -194,50 +371,7 @@ void setup()
   log_info("Connected to SSID: %s", wifi_ssid);
   log_info("IP address: %s", WiFi.localIP().toString().c_str());
 
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setHostname("myesp8266");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
-  ArduinoOTA.onStart([]()
-                     {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_FS
-      type = "filesystem";
-    }
-
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    log_info("Start updating %s", type.c_str()); });
-  ArduinoOTA.onEnd([]()
-                   { log_info("End"); });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-                        { log_info("Progress: %u%%\r", (progress / (total / 100))); });
-  ArduinoOTA.onError([](ota_error_t error)
-                     {
-    log_error("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      log_error("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      log_error("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      log_error("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      log_error("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      log_error("End Failed");
-    } });
-  ArduinoOTA.begin();
-
+  setupOTA();
   connectToWifi();
 }
 
@@ -291,8 +425,8 @@ void loop()
   if (g_control)
   {
     // TODO: read sensor value every x seconds and stop movement if not moving anymore
-    double sensor = readSensor();
-    if (g_desk.control(sensor, g_targetHeightCm))
+    double sensorCm = readSensor();
+    if (g_desk.controlLoop(sensorCm, g_targetHeightCm))
     {
       // target position reached
       log_info("Reached target position");

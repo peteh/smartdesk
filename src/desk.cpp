@@ -37,7 +37,7 @@ void Desk::moveDown()
   digitalWrite(m_outputDown, g_outputDown);
 }
 
-bool Desk::control(double sensorCm, double targetCm)
+bool Desk::controlLoop(const double sensorCm, const double targetCm)
 {
   double distance = targetCm - sensorCm;
   if (abs(distance) < m_targetAccuracyCm)
