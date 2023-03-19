@@ -40,14 +40,17 @@ struct Config
 
 Config g_config = {0, 0, 0};
 
-enum Preset{
-  NONE, 
-  PRESET1, 
-  PRESET2, 
-  PRESET3
-};
-
-Preset g_preset = Preset::NONE; 
+namespace desk
+{
+  enum Preset
+  {
+    NONE,
+    PRESET1,
+    PRESET2,
+    PRESET3
+  };
+}
+desk::Preset g_preset = desk::Preset::NONE;
 
 WiFiClient net;
 PubSubClient client(net);
@@ -125,55 +128,53 @@ void loadSettings()
   file.close();
 }
 
-
 void saveSettings()
 {
-    // Open file for writing
-    File file = LittleFS.open(CONFIG_FILENAME, "w");
-    if (!file)
-    {
-        log_error("Failed to create config file");
-        return;
-    }
-    // Allocate a temporary JsonDocument
-    // Don't forget to change the capacity to match your requirements.
-    // Use arduinojson.org/assistant to compute the capacity.
-    StaticJsonDocument<1024> doc;
+  // Open file for writing
+  File file = LittleFS.open(CONFIG_FILENAME, "w");
+  if (!file)
+  {
+    log_error("Failed to create config file");
+    return;
+  }
+  // Allocate a temporary JsonDocument
+  // Don't forget to change the capacity to match your requirements.
+  // Use arduinojson.org/assistant to compute the capacity.
+  StaticJsonDocument<1024> doc;
 
-    // Set the values in the document
-    doc["preset1"] = g_config.preset1;
-    doc["preset2"] = g_config.preset2;
-    doc["preset3"] = g_config.preset3;
+  // Set the values in the document
+  doc["preset1"] = g_config.preset1;
+  doc["preset2"] = g_config.preset2;
+  doc["preset3"] = g_config.preset3;
 
-    // Serialize JSON to file
-    if (serializeJson(doc, file) == 0)
-    {
-        log_error("Failed to write config to file");
-    }
+  // Serialize JSON to file
+  if (serializeJson(doc, file) == 0)
+  {
+    log_error("Failed to write config to file");
+  }
 
-    // Close the file
-    file.close();
+  // Close the file
+  file.close();
 }
 
-void publishMqttPreset(MqttEntity *device, Preset preset)
+void publishMqttPreset(MqttEntity *device, desk::Preset preset)
 {
-  if(preset == Preset::NONE)
+  if (preset == desk::Preset::NONE)
   {
     client.publish(device->getStateTopic(), "None");
   }
-  else if(preset == Preset::PRESET1)
+  else if (preset == desk::Preset::PRESET1)
   {
     client.publish(device->getStateTopic(), "1");
   }
-  else if(preset == Preset::PRESET2)
+  else if (preset == desk::Preset::PRESET2)
   {
     client.publish(device->getStateTopic(), "2");
   }
-  else if(preset == Preset::PRESET3)
+  else if (preset == desk::Preset::PRESET3)
   {
     client.publish(device->getStateTopic(), "3");
   }
-  
 }
 
 void publishMqttState(MqttEntity *device, const char *state)
@@ -210,10 +211,9 @@ void publishConfig()
 
   delay(1000);
 
-  // TODO state of preset
-
   // publish all initial states
   publishMqttState(&mqttHeight, (uint16_t)g_sensorHeightCm);
+  publishMqttState(&mqttPreset, g_preset);
   publishMqttState(&mqttConfigPreset1, g_config.preset1);
   publishMqttState(&mqttConfigPreset2, g_config.preset2);
   publishMqttState(&mqttConfigPreset3, g_config.preset3);
@@ -247,23 +247,21 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       log_info("Received None Preset - do nothing");
     }
-    else if(strncmp((char *)payload, "1", length) == 0)
+    else if (strncmp((char *)payload, "1", length) == 0)
     {
       log_info("Received Preset 1");
       setNewTarget((double)g_config.preset1);
     }
-    else if(strncmp((char *)payload, "2", length) == 0)
+    else if (strncmp((char *)payload, "2", length) == 0)
     {
       log_info("Received Preset 2");
       setNewTarget((double)g_config.preset2);
     }
-    else if(strncmp((char *)payload, "3", length) == 0)
+    else if (strncmp((char *)payload, "3", length) == 0)
     {
       log_info("Received Preset 3");
       setNewTarget((double)g_config.preset3);
     }
-    //uint16_t data = parseValue((char *)payload, length);
-    //setNewTarget(data);
   }
   else if (strcmp(topic, mqttConfigPreset1.getCommandTopic()) == 0)
   {
@@ -338,21 +336,21 @@ void connectToWifi()
   log_info("Wifi connected!");
 }
 
-Preset calculatePreset(double sensorCm)
+desk::Preset calculatePreset(double sensorCm)
 {
-  if(abs(g_config.preset1 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_config.preset1 - sensorCm) < g_desk.getTargetAccuracyCm())
   {
-    return Preset::PRESET1;
+    return desk::Preset::PRESET1;
   }
-  if(abs(g_config.preset2 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_config.preset2 - sensorCm) < g_desk.getTargetAccuracyCm())
   {
-    return Preset::PRESET2;
+    return desk::Preset::PRESET2;
   }
-  if(abs(g_config.preset3 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_config.preset3 - sensorCm) < g_desk.getTargetAccuracyCm())
   {
-    return Preset::PRESET3;
+    return desk::Preset::PRESET3;
   }
-  return Preset::NONE;
+  return desk::Preset::NONE;
 }
 
 void setup()
@@ -368,17 +366,17 @@ void setup()
 
   mqttConfigPreset1.setPattern("[0-9]+");
   mqttConfigPreset1.setMaxLetters(3);
-  mqttConfigPreset1.setIcon("mdi:desk");
+  mqttConfigPreset1.setIcon("mdi:human-male-height");
   mqttConfigPreset1.setEntityType(EntityCategory::CONFIG);
 
   mqttConfigPreset2.setPattern("[0-9]+");
   mqttConfigPreset2.setMaxLetters(3);
-  mqttConfigPreset2.setIcon("mdi:desk");
+  mqttConfigPreset2.setIcon("mdi:human-male-height");
   mqttConfigPreset2.setEntityType(EntityCategory::CONFIG);
 
   mqttConfigPreset3.setPattern("[0-9]+");
   mqttConfigPreset3.setMaxLetters(3);
-  mqttConfigPreset3.setIcon("mdi:desk");
+  mqttConfigPreset3.setIcon("mdi:human-male-height");
   mqttConfigPreset3.setEntityType(EntityCategory::CONFIG);
 
   Serial.begin(115200);
@@ -474,9 +472,10 @@ void loop()
     // TODO: read sensor value every x seconds and stop movement if not moving anymore
     // TODO: update preset also when moving with buttons
     double sensorCm = readSensor();
-    Preset preset = calculatePreset(sensorCm);
-    if(preset != g_preset)
+    desk::Preset preset = calculatePreset(sensorCm);
+    if (preset != g_preset)
     {
+      log_info("Reached height of preset %d", g_preset);
       g_preset = preset;
       publishMqttPreset(&mqttPreset, g_preset);
     }
