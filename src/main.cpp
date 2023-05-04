@@ -6,6 +6,7 @@
 #include <MqttDevice.h>
 #include <esplog.h>
 #include <LittleFS.h>
+#include "Adafruit_VL53L0X.h"
 
 #include "utils.h"
 #include "config.h"
@@ -14,14 +15,17 @@
 #define INPUT_UP 8
 #define INPUT_DOWN 9
 
-#define OUTPUT_UP 10
-#define OUTPUT_DOWN 11
+#define OUTPUT_UP 3
+#define OUTPUT_DOWN 5
 
-#define SENSOR_TRIGGER 12
-#define SENSOR_ECHO 13
+#define SENSOR_TRIGGER 16
+#define SENSOR_ECHO 18
 
 // when the position is in this range the control will stop
 #define TARGET_ACCURACY_CM 5
+
+// update only every x ms
+const long MIN_UPDATE_RATE_MS = 1000;
 
 bool g_inputUp = false;
 bool g_inputDown = false;
@@ -29,6 +33,8 @@ Desk g_desk(OUTPUT_UP, OUTPUT_DOWN);
 
 double g_targetHeightCm = 80.;
 double g_sensorHeightCm = 60.;
+double g_lastSensorHeightCm = 60.;
+long g_lastSensorHeightUpdate = 0;
 bool g_control = false;
 
 struct Config
@@ -40,6 +46,7 @@ struct Config
 
 Config g_config = {0, 0, 0};
 
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 namespace desk
 {
   enum Preset
@@ -76,7 +83,7 @@ bool formatLittleFS()
   return LittleFS.begin();
 }
 
-double readSensor()
+double readSensorUltrasonic()
 {
   // Clears the trigPin
   digitalWrite(SENSOR_TRIGGER, LOW);
@@ -89,9 +96,22 @@ double readSensor()
   long duration = pulseIn(SENSOR_ECHO, HIGH, 1 * 1000 * 1000);
   // Calculating the distance
   double distance = duration * 0.034 / 2.;
-  // TODO: remove fake value
-  return 60.;
   return distance;
+}
+
+double readSensorVL()
+{
+  VL53L0X_RangingMeasurementData_t measure;
+    
+  Serial.print("Reading a measurement... ");
+  lox.rangingTest(&measure, false); // pass in 'true' to get debug data printout!
+
+  //if (measure.RangeStatus != 4) {  // phase failures have incorrect data
+  //  Serial.print("Distance (mm): "); Serial.println(measure.RangeMilliMeter);
+  //} else {
+  //  Serial.println(" out of range ");
+  //}
+  return measure.RangeMilliMeter / 10.;
 }
 
 void setNewTarget(double newTargetCm)
@@ -104,7 +124,6 @@ void setNewTarget(double newTargetCm)
 void loadSettings()
 {
   // Open file for reading
-  // TODO: check if file exists
   File file = LittleFS.open(CONFIG_FILENAME, "r");
 
   // Allocate a temporary JsonDocument
@@ -380,12 +399,18 @@ void setup()
   mqttConfigPreset3.setEntityType(EntityCategory::CONFIG);
 
   Serial.begin(115200);
+  if (!lox.begin()) {
+    Serial.println(F("Failed to boot VL53L0X"));
+    while(1);
+  }
 
-  pinMode(SENSOR_TRIGGER, OUTPUT);
-  pinMode(SENSOR_ECHO, INPUT);
+  
 
   pinMode(INPUT_UP, INPUT_PULLDOWN);
   pinMode(INPUT_DOWN, INPUT_PULLDOWN);
+
+  pinMode(OUTPUT_UP, OUTPUT);
+  pinMode(OUTPUT_DOWN, OUTPUT);
 
   if (!LittleFS.begin())
   {
@@ -402,6 +427,10 @@ void setup()
   }
   loadSettings();
 
+  // init sensor value
+  lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
+  g_sensorHeightCm = readSensorVL();
+
   g_desk.begin();
 
   WiFi.mode(WIFI_STA);
@@ -417,9 +446,9 @@ void setup()
   log_info("IP address: %s", WiFi.localIP().toString().c_str());
 
   setupOTA();
-  connectToWifi();
 }
 
+bool state = true;
 void loop()
 {
   if (WiFi.status() != WL_CONNECTED)
@@ -435,33 +464,37 @@ void loop()
 
   // logic part
   bool inputUp = digitalRead(INPUT_UP);
+  bool inputDown = digitalRead(INPUT_DOWN);
+
+  if(inputUp)
+  {
+    g_control = false;
+    g_desk.moveUp();
+    g_sensorHeightCm = readSensorVL();
+  }
+  else if(inputDown)
+  {
+    g_control = false;
+    g_desk.moveDown();
+    g_sensorHeightCm = readSensorVL();
+  }
+
   if (inputUp != g_inputUp)
   {
     log_info("Up pressed: %d", inputUp);
     g_inputUp = inputUp;
-    // stop Controlling the table
-    g_control = false;
-    if (g_inputUp)
+    if(!inputUp)
     {
-      g_desk.moveUp();
-    }
-    else
-    {
+      g_control = false;
       g_desk.stop();
     }
-  }
-  bool inputDown = digitalRead(INPUT_DOWN);
-  if (inputUp != g_inputUp)
+  }  
+  if (inputDown != g_inputDown)
   {
     log_info("Down pressed: %d", inputDown);
     g_inputDown = inputDown;
-    // stop Controlling the table
     g_control = false;
-    if (g_inputDown)
-    {
-      g_desk.moveDown();
-    }
-    else
+    if (!inputDown)
     {
       g_desk.stop();
     }
@@ -470,20 +503,29 @@ void loop()
   if (g_control)
   {
     // TODO: read sensor value every x seconds and stop movement if not moving anymore
-    // TODO: update preset also when moving with buttons
-    double sensorCm = readSensor();
-    desk::Preset preset = calculatePreset(sensorCm);
-    if (preset != g_preset)
-    {
-      log_info("Reached height of preset %d", g_preset);
-      g_preset = preset;
-      publishMqttPreset(&mqttPreset, g_preset);
-    }
+    double sensorCm = readSensorVL();
+    g_sensorHeightCm = sensorCm;
+    log_debug("Sensor: %f", sensorCm);
+    
     if (g_desk.controlLoop(sensorCm, g_targetHeightCm))
     {
       // target position reached
       log_info("Reached target position");
       g_control = false;
     }
+  }
+  // limit updates to configured frequency and update position and preset
+  if(millis() - g_lastSensorHeightUpdate > MIN_UPDATE_RATE_MS && g_sensorHeightCm != g_lastSensorHeightCm)
+  {
+    desk::Preset preset = calculatePreset(g_sensorHeightCm);
+    if (preset != g_preset)
+    {
+      log_info("Reached height of preset %d", g_preset);
+      g_preset = preset;
+      publishMqttPreset(&mqttPreset, g_preset);
+    }
+    publishMqttState(&mqttHeight, g_sensorHeightCm);
+    g_lastSensorHeightCm = g_sensorHeightCm;
+    g_lastSensorHeightUpdate = millis();
   }
 }

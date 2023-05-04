@@ -13,6 +13,7 @@ public:
     void stop();
     void moveUp();
     void moveDown();
+    bool isMoving();
     bool controlLoop(const double sensor, const double target);
     double getTargetAccuracyCm()
     {
@@ -25,6 +26,10 @@ private:
 
     double m_targetAccuracyCm = 5.;
 
-    bool g_outputUp = false;
-    bool g_outputDown = false;
+    bool m_up = false;
+    bool m_down = false;
+
+    long m_lastStop = 0;
+
+    const long SWITCH_DELAY_MS = 4000;
 };

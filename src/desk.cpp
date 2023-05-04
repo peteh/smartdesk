@@ -6,35 +6,57 @@ void Desk::begin()
   pinMode(m_outputUp, OUTPUT);
   pinMode(m_outputDown, OUTPUT);
 
-  digitalWrite(m_outputUp, g_outputUp);
-  digitalWrite(m_outputDown, g_outputUp);
+  digitalWrite(m_outputUp, m_up);
+  digitalWrite(m_outputDown, m_up);
 }
-
-
 
 void Desk::moveUp()
 {
-  g_outputUp = true;
-  g_outputDown = false;
-  digitalWrite(m_outputUp, g_outputUp);
-  digitalWrite(m_outputDown, g_outputDown);
+  if(m_down)
+  {
+    stop();
+  }
+
+  if(millis() - m_lastStop > SWITCH_DELAY_MS && !m_up) 
+  {
+    log_info("Desk Up!");
+    m_up = true;
+    m_down = false;
+    digitalWrite(m_outputUp, m_up);
+    digitalWrite(m_outputDown, m_down);
+  }
 }
 
 void Desk::stop()
 {
+  if(!m_up && !m_down)
+  {
+    return;
+  }
+
   log_info("Desk Stop!");
-  g_outputUp = false;
-  g_outputDown = false;
-  digitalWrite(m_outputUp, g_outputUp);
-  digitalWrite(m_outputDown, g_outputDown);
+  m_up = false;
+  m_down = false;
+  digitalWrite(m_outputUp, m_up);
+  digitalWrite(m_outputDown, m_down);
+  m_lastStop = millis();
 }
 
 void Desk::moveDown()
 {
-  g_outputUp = false;
-  g_outputDown = true;
-  digitalWrite(m_outputUp, g_outputUp);
-  digitalWrite(m_outputDown, g_outputDown);
+  if(m_up)
+  {
+    stop();
+  }
+
+  if(millis() - m_lastStop > SWITCH_DELAY_MS && !m_down) 
+  {
+    log_info("Desk Down!");
+    m_up = false;
+    m_down = true;
+    digitalWrite(m_outputUp, m_up);
+    digitalWrite(m_outputDown, m_down);
+  }
 }
 
 bool Desk::controlLoop(const double sensorCm, const double targetCm)
@@ -55,4 +77,10 @@ bool Desk::controlLoop(const double sensorCm, const double targetCm)
     moveDown();
   }
   return false;
+}
+
+
+bool Desk::isMoving()
+{
+  return m_down || m_up;
 }
