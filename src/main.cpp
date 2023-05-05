@@ -37,14 +37,9 @@ double g_lastSensorHeightCm = 60.;
 long g_lastSensorHeightUpdate = 0;
 bool g_control = false;
 
-struct Config
-{
-  uint16_t preset1;
-  uint16_t preset2;
-  uint16_t preset3;
-};
+#define NUM_PRESETS 3
 
-Config g_config = {0, 0, 0};
+uint16_t g_presets[NUM_PRESETS] = {0};
 
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 namespace desk
@@ -68,11 +63,11 @@ const char *HOMEASSISTANT_STATUS_TOPIC_ALT = "ha/status";
 MqttDevice mqttDevice(composeClientID().c_str(), "Smart Desk", "Smart Desk Control OMT", "maker_pt");
 MqttText mqttHeight(&mqttDevice, "height", "Desk Height");
 MqttSelect mqttPreset(&mqttDevice, "preset", "Desk Preset");
-MqttText mqttConfigPreset1(&mqttDevice, "preset1", "Desk Preset 1");
-MqttText mqttConfigPreset2(&mqttDevice, "preset2", "Desk Preset 2");
-MqttText mqttConfigPreset3(&mqttDevice, "preset3", "Desk Preset 3");
+MqttText mqttConfigPresets[NUM_PRESETS] = {MqttText(&mqttDevice, "preset1", "Desk Preset 1"),
+                                           MqttText(&mqttDevice, "preset2", "Desk Preset 2"),
+                                           MqttText(&mqttDevice, "preset3", "Desk Preset 3")};
 
-#define CONFIG_FILENAME "/config.txt"
+#define CONFIG_FILENAME "/config.json"
 
 bool formatLittleFS()
 {
@@ -102,15 +97,13 @@ double readSensorUltrasonic()
 double readSensorVL()
 {
   VL53L0X_RangingMeasurementData_t measure;
-    
-  Serial.print("Reading a measurement... ");
   lox.rangingTest(&measure, false); // pass in 'true' to get debug data printout!
 
-  //if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-  //  Serial.print("Distance (mm): "); Serial.println(measure.RangeMilliMeter);
-  //} else {
-  //  Serial.println(" out of range ");
-  //}
+  // if (measure.RangeStatus != 4) {  // phase failures have incorrect data
+  //   Serial.print("Distance (mm): "); Serial.println(measure.RangeMilliMeter);
+  // } else {
+  //   Serial.println(" out of range ");
+  // }
   return measure.RangeMilliMeter / 10.;
 }
 
@@ -139,9 +132,10 @@ void loadSettings()
   }
 
   // Copy values from the JsonDocument to the Config
-  g_config.preset1 = doc["preset1"] | g_config.preset1;
-  g_config.preset2 = doc["preset2"] | g_config.preset2;
-  g_config.preset3 = doc["preset3"] | g_config.preset3;
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    g_presets[i] = doc["presets"][i] | g_presets[i];
+  }
 
   // Close the file (Curiously, File's destructor doesn't close the file)
   file.close();
@@ -162,9 +156,11 @@ void saveSettings()
   StaticJsonDocument<1024> doc;
 
   // Set the values in the document
-  doc["preset1"] = g_config.preset1;
-  doc["preset2"] = g_config.preset2;
-  doc["preset3"] = g_config.preset3;
+  JsonArray data = doc.createNestedArray("presets");
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    data.add(g_presets[i]);
+  }
 
   // Serialize JSON to file
   if (serializeJson(doc, file) == 0)
@@ -224,18 +220,20 @@ void publishConfig()
 {
   publishConfig(&mqttHeight);
   publishConfig(&mqttPreset);
-  publishConfig(&mqttConfigPreset1);
-  publishConfig(&mqttConfigPreset2);
-  publishConfig(&mqttConfigPreset3);
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    publishConfig(&mqttConfigPresets[i]);
+  }
 
   delay(1000);
 
   // publish all initial states
   publishMqttState(&mqttHeight, (uint16_t)g_sensorHeightCm);
   publishMqttState(&mqttPreset, g_preset);
-  publishMqttState(&mqttConfigPreset1, g_config.preset1);
-  publishMqttState(&mqttConfigPreset2, g_config.preset2);
-  publishMqttState(&mqttConfigPreset3, g_config.preset3);
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    publishMqttState(&mqttConfigPresets[i], g_presets[i]);
+  }
 }
 
 uint16_t parseValue(const char *data, unsigned int length)
@@ -260,56 +258,38 @@ void callback(char *topic, byte *payload, unsigned int length)
     uint16_t data = parseValue((char *)payload, length);
     setNewTarget(data);
   }
+
   if (strcmp(topic, mqttPreset.getCommandTopic()) == 0)
   {
     if (strncmp((char *)payload, "None", length) == 0)
     {
       log_info("Received None Preset - do nothing");
+      return;
     }
-    else if (strncmp((char *)payload, "1", length) == 0)
+    uint16_t targetPreset = parseValue((char *)payload, length);
+    if( targetPreset > 0 && targetPreset <= NUM_PRESETS)
     {
-      log_info("Received Preset 1");
-      setNewTarget((double)g_config.preset1);
-    }
-    else if (strncmp((char *)payload, "2", length) == 0)
-    {
-      log_info("Received Preset 2");
-      setNewTarget((double)g_config.preset2);
-    }
-    else if (strncmp((char *)payload, "3", length) == 0)
-    {
-      log_info("Received Preset 3");
-      setNewTarget((double)g_config.preset3);
+      log_info("Received Preset %d", targetPreset);
+      setNewTarget((double)g_presets[targetPreset-1]);
     }
   }
-  else if (strcmp(topic, mqttConfigPreset1.getCommandTopic()) == 0)
+
+  // check for preset saving commands
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
   {
-    uint16_t data = parseValue((char *)payload, length);
-    g_config.preset1 = data;
-    log_info("Setting Preset 1 to '%d'", g_config.preset1);
-    saveSettings();
-    publishMqttState(&mqttConfigPreset1, g_config.preset1);
-  }
-  else if (strcmp(topic, mqttConfigPreset2.getCommandTopic()) == 0)
-  {
-    uint16_t data = parseValue((char *)payload, length);
-    g_config.preset2 = data;
-    log_info("Setting Preset 2 to '%d'", g_config.preset2);
-    saveSettings();
-    publishMqttState(&mqttConfigPreset2, g_config.preset2);
-  }
-  else if (strcmp(topic, mqttConfigPreset3.getCommandTopic()) == 0)
-  {
-    uint16_t data = parseValue((char *)payload, length);
-    g_config.preset3 = data;
-    log_info("Setting Preset 3 to '%d'", g_config.preset3);
-    saveSettings();
-    publishMqttState(&mqttConfigPreset3, g_config.preset3);
+    if (strcmp(topic, mqttConfigPresets[i].getCommandTopic()) == 0)
+    {
+      uint16_t data = parseValue((char *)payload, length);
+      g_presets[i] = data;
+      log_info("Setting Preset %d to '%d'", i, g_presets[i]);
+      saveSettings();
+      publishMqttState(&mqttConfigPresets[i], g_presets[i]);
+    }
   }
 
   // publish config when homeassistant comes online and needs the configuration again
-  else if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
-           strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0)
+  if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
+      strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0)
   {
     if (strncmp((char *)payload, "online", length) == 0)
     {
@@ -331,10 +311,10 @@ void connectToMqtt()
 
   client.subscribe(mqttHeight.getCommandTopic(), 1);
   client.subscribe(mqttPreset.getCommandTopic(), 1);
-  client.subscribe(mqttConfigPreset1.getCommandTopic(), 1);
-  client.subscribe(mqttConfigPreset2.getCommandTopic(), 1);
-  client.subscribe(mqttConfigPreset3.getCommandTopic(), 1);
-
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    client.subscribe(mqttConfigPresets[i].getCommandTopic(), 1);
+  }
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC);
   client.subscribe(HOMEASSISTANT_STATUS_TOPIC_ALT);
 
@@ -357,15 +337,15 @@ void connectToWifi()
 
 desk::Preset calculatePreset(double sensorCm)
 {
-  if (abs(g_config.preset1 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_presets[0] - sensorCm) < g_desk.getTargetAccuracyCm())
   {
     return desk::Preset::PRESET1;
   }
-  if (abs(g_config.preset2 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_presets[1] - sensorCm) < g_desk.getTargetAccuracyCm())
   {
     return desk::Preset::PRESET2;
   }
-  if (abs(g_config.preset3 - sensorCm) < g_desk.getTargetAccuracyCm())
+  if (abs(g_presets[2] - sensorCm) < g_desk.getTargetAccuracyCm())
   {
     return desk::Preset::PRESET3;
   }
@@ -383,28 +363,22 @@ void setup()
   mqttPreset.addOption("2");
   mqttPreset.addOption("3");
 
-  mqttConfigPreset1.setPattern("[0-9]+");
-  mqttConfigPreset1.setMaxLetters(3);
-  mqttConfigPreset1.setIcon("mdi:human-male-height");
-  mqttConfigPreset1.setEntityType(EntityCategory::CONFIG);
-
-  mqttConfigPreset2.setPattern("[0-9]+");
-  mqttConfigPreset2.setMaxLetters(3);
-  mqttConfigPreset2.setIcon("mdi:human-male-height");
-  mqttConfigPreset2.setEntityType(EntityCategory::CONFIG);
-
-  mqttConfigPreset3.setPattern("[0-9]+");
-  mqttConfigPreset3.setMaxLetters(3);
-  mqttConfigPreset3.setIcon("mdi:human-male-height");
-  mqttConfigPreset3.setEntityType(EntityCategory::CONFIG);
-
-  Serial.begin(115200);
-  if (!lox.begin()) {
-    Serial.println(F("Failed to boot VL53L0X"));
-    while(1);
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
+  {
+    client.subscribe(mqttConfigPresets[i].getCommandTopic(), 1);
+    mqttConfigPresets[i].setPattern("[0-9]+");
+    mqttConfigPresets[i].setMaxLetters(3);
+    mqttConfigPresets[i].setIcon("mdi:human-male-height");
+    mqttConfigPresets[i].setEntityType(EntityCategory::CONFIG);
   }
 
-  
+  Serial.begin(115200);
+  if (!lox.begin())
+  {
+    Serial.println(F("Failed to boot VL53L0X"));
+    while (1)
+      ;
+  }
 
   pinMode(INPUT_UP, INPUT_PULLDOWN);
   pinMode(INPUT_DOWN, INPUT_PULLDOWN);
@@ -466,13 +440,13 @@ void loop()
   bool inputUp = digitalRead(INPUT_UP);
   bool inputDown = digitalRead(INPUT_DOWN);
 
-  if(inputUp)
+  if (inputUp)
   {
     g_control = false;
     g_desk.moveUp();
     g_sensorHeightCm = readSensorVL();
   }
-  else if(inputDown)
+  else if (inputDown)
   {
     g_control = false;
     g_desk.moveDown();
@@ -483,12 +457,12 @@ void loop()
   {
     log_info("Up pressed: %d", inputUp);
     g_inputUp = inputUp;
-    if(!inputUp)
+    if (!inputUp)
     {
       g_control = false;
       g_desk.stop();
     }
-  }  
+  }
   if (inputDown != g_inputDown)
   {
     log_info("Down pressed: %d", inputDown);
@@ -506,7 +480,7 @@ void loop()
     double sensorCm = readSensorVL();
     g_sensorHeightCm = sensorCm;
     log_debug("Sensor: %f", sensorCm);
-    
+
     if (g_desk.controlLoop(sensorCm, g_targetHeightCm))
     {
       // target position reached
@@ -515,7 +489,7 @@ void loop()
     }
   }
   // limit updates to configured frequency and update position and preset
-  if(millis() - g_lastSensorHeightUpdate > MIN_UPDATE_RATE_MS && g_sensorHeightCm != g_lastSensorHeightCm)
+  if (millis() - g_lastSensorHeightUpdate > MIN_UPDATE_RATE_MS && g_sensorHeightCm != g_lastSensorHeightCm)
   {
     desk::Preset preset = calculatePreset(g_sensorHeightCm);
     if (preset != g_preset)
