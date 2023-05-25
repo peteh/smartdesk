@@ -3,9 +3,11 @@
 class Desk
 {
 public:
-    Desk(const uint8_t outputUp, const uint8_t outputDown)
+    Desk(const uint8_t outputUp, const uint8_t outputDown, const uint16_t minHeight, const uint16_t maxHeight)
         : m_outputUp(outputUp),
-          m_outputDown(outputDown)
+          m_outputDown(outputDown),
+          m_minHeight(minHeight),
+          m_maxHeight(maxHeight)
     {
     }
 
@@ -20,9 +22,21 @@ public:
         return m_targetAccuracyCm;
     }
 
+    void setMinHeight(uint16_t minHeight)
+    {
+        m_minHeight = minHeight;
+    }
+
+    void setMaxHeight(uint16_t maxHeight)
+    {
+        m_maxHeight = maxHeight;
+    }
+
 private:
     const uint8_t m_outputUp;
     const uint8_t m_outputDown;
+    uint16_t m_minHeight;
+    uint16_t m_maxHeight;
 
     double m_targetAccuracyCm = 5.;
 

@@ -61,10 +61,21 @@ void Desk::moveDown()
 
 bool Desk::controlLoop(const double sensorCm, const double targetCm)
 {
-  double distance = targetCm - sensorCm;
+  double controlCm = targetCm;
+  if (controlCm > m_maxHeight)
+  {
+    controlCm = m_maxHeight;
+  }
+
+  if(controlCm < m_minHeight)
+  {
+    controlCm = m_minHeight;
+  }
+
+  double distance = controlCm - sensorCm;
   if (abs(distance) < m_targetAccuracyCm)
   {
-    log_info("Reached target position (target: %.2fcm, is: %.2f)", targetCm, sensorCm);
+    log_info("Reached target position (target: %.2fcm, is: %.2f)", controlCm, sensorCm);
     stop();
     return true;
   }

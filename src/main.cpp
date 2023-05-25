@@ -29,7 +29,9 @@ const long MIN_UPDATE_RATE_MS = 1000;
 
 bool g_inputUp = false;
 bool g_inputDown = false;
-Desk g_desk(OUTPUT_UP, OUTPUT_DOWN);
+double g_minHeight = 100;
+double g_maxHeight = 150;
+Desk g_desk(OUTPUT_UP, OUTPUT_DOWN, g_minHeight, g_maxHeight);
 
 double g_targetHeightCm = 80.;
 double g_sensorHeightCm = 60.;
@@ -41,18 +43,9 @@ bool g_control = false;
 
 uint16_t g_presets[NUM_PRESETS] = {0};
 
+
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-namespace desk
-{
-  enum Preset
-  {
-    NONE,
-    PRESET1,
-    PRESET2,
-    PRESET3
-  };
-}
-desk::Preset g_preset = desk::Preset::NONE;
+uint8_t g_preset = 0;
 
 WiFiClient net;
 PubSubClient client(net);
@@ -63,9 +56,13 @@ const char *HOMEASSISTANT_STATUS_TOPIC_ALT = "ha/status";
 MqttDevice mqttDevice(composeClientID().c_str(), "Smart Desk", "Smart Desk Control OMT", "maker_pt");
 MqttText mqttHeight(&mqttDevice, "height", "Desk Height");
 MqttSelect mqttPreset(&mqttDevice, "preset", "Desk Preset");
+// TODO: template? generate?
 MqttText mqttConfigPresets[NUM_PRESETS] = {MqttText(&mqttDevice, "preset1", "Desk Preset 1"),
                                            MqttText(&mqttDevice, "preset2", "Desk Preset 2"),
                                            MqttText(&mqttDevice, "preset3", "Desk Preset 3")};
+
+MqttText mqttConfigMinHeight(&mqttDevice, "minheight", "Desk Min Height");
+MqttText mqttConfigMaxHeight(&mqttDevice, "maxheight", "Desk Max Height");
 
 #define CONFIG_FILENAME "/config.json"
 
@@ -137,6 +134,9 @@ void loadSettings()
     g_presets[i] = doc["presets"][i] | g_presets[i];
   }
 
+  g_minHeight = doc["minHeight"] | g_minHeight;
+  g_maxHeight = doc["maxHeight"] | g_maxHeight;
+
   // Close the file (Curiously, File's destructor doesn't close the file)
   file.close();
 }
@@ -161,7 +161,8 @@ void saveSettings()
   {
     data.add(g_presets[i]);
   }
-
+  doc["minHeight"] = g_minHeight;
+  doc["maxHeight"] = g_maxHeight;
   // Serialize JSON to file
   if (serializeJson(doc, file) == 0)
   {
@@ -172,24 +173,16 @@ void saveSettings()
   file.close();
 }
 
-void publishMqttPreset(MqttEntity *device, desk::Preset preset)
+void publishMqttPreset(MqttEntity *device, uint8_t preset)
 {
-  if (preset == desk::Preset::NONE)
+  if (preset == 0)
   {
     client.publish(device->getStateTopic(), "None");
   }
-  else if (preset == desk::Preset::PRESET1)
-  {
-    client.publish(device->getStateTopic(), "1");
-  }
-  else if (preset == desk::Preset::PRESET2)
-  {
-    client.publish(device->getStateTopic(), "2");
-  }
-  else if (preset == desk::Preset::PRESET3)
-  {
-    client.publish(device->getStateTopic(), "3");
-  }
+
+  char buffer[10];
+  snprintf(buffer, sizeof(buffer), "%d", preset);
+  client.publish(device->getStateTopic(), buffer);
 }
 
 void publishMqttState(MqttEntity *device, const char *state)
@@ -220,6 +213,8 @@ void publishConfig()
 {
   publishConfig(&mqttHeight);
   publishConfig(&mqttPreset);
+  publishConfig(&mqttConfigMinHeight);
+  publishConfig(&mqttConfigMaxHeight);
   for (uint8_t i = 0; i < NUM_PRESETS; i++)
   {
     publishConfig(&mqttConfigPresets[i]);
@@ -287,6 +282,24 @@ void callback(char *topic, byte *payload, unsigned int length)
     }
   }
 
+  if (strcmp(topic, mqttConfigMinHeight.getCommandTopic()) == 0)
+  {
+    uint16_t data = parseValue((char *)payload, length);
+    
+    g_minHeight = data;
+    saveSettings();
+    g_desk.setMinHeight(g_minHeight);
+  }
+
+  if (strcmp(topic, mqttConfigMaxHeight.getCommandTopic()) == 0)
+  {
+    uint16_t data = parseValue((char *)payload, length);
+    g_maxHeight = data;
+    saveSettings();
+    g_desk.setMaxHeight(g_maxHeight);
+  }
+
+
   // publish config when homeassistant comes online and needs the configuration again
   if (strcmp(topic, HOMEASSISTANT_STATUS_TOPIC) == 0 ||
       strcmp(topic, HOMEASSISTANT_STATUS_TOPIC_ALT) == 0)
@@ -310,6 +323,8 @@ void connectToMqtt()
   }
 
   client.subscribe(mqttHeight.getCommandTopic(), 1);
+  client.subscribe(mqttConfigMinHeight.getCommandTopic(), 1);
+  client.subscribe(mqttConfigMaxHeight.getCommandTopic(), 1);
   client.subscribe(mqttPreset.getCommandTopic(), 1);
   for (uint8_t i = 0; i < NUM_PRESETS; i++)
   {
@@ -335,21 +350,17 @@ void connectToWifi()
   log_info("Wifi connected!");
 }
 
-desk::Preset calculatePreset(double sensorCm)
+uint8_t calculatePreset(double sensorCm, double targetAccuracy)
 {
-  if (abs(g_presets[0] - sensorCm) < g_desk.getTargetAccuracyCm())
+  for (uint8_t i = 0; i < NUM_PRESETS; i++)
   {
-    return desk::Preset::PRESET1;
+    if(abs(g_presets[i] - sensorCm) < targetAccuracy)
+    {
+      return i+1;
+    }
   }
-  if (abs(g_presets[1] - sensorCm) < g_desk.getTargetAccuracyCm())
-  {
-    return desk::Preset::PRESET2;
-  }
-  if (abs(g_presets[2] - sensorCm) < g_desk.getTargetAccuracyCm())
-  {
-    return desk::Preset::PRESET3;
-  }
-  return desk::Preset::NONE;
+  // no target match
+  return 0;
 }
 
 void setup()
@@ -357,15 +368,23 @@ void setup()
   mqttHeight.setPattern("[0-9]+");
   mqttHeight.setMaxLetters(3);
   mqttHeight.setIcon("mdi:desk");
+  mqttConfigMinHeight.setPattern("[0-9]+");
+  mqttConfigMinHeight.setMaxLetters(3);
+  mqttConfigMinHeight.setIcon("mdi:desk");
+  mqttConfigMinHeight.setEntityType(EntityCategory::CONFIG);
+  mqttConfigMaxHeight.setPattern("[0-9]+");
+  mqttConfigMaxHeight.setMaxLetters(3);
+  mqttConfigMaxHeight.setIcon("mdi:desk");
+  mqttConfigMaxHeight.setEntityType(EntityCategory::CONFIG);
 
   mqttPreset.addOption("None");
-  mqttPreset.addOption("1");
-  mqttPreset.addOption("2");
-  mqttPreset.addOption("3");
 
   for (uint8_t i = 0; i < NUM_PRESETS; i++)
   {
-    client.subscribe(mqttConfigPresets[i].getCommandTopic(), 1);
+    char buffer[10];
+    snprintf(buffer, sizeof(buffer), "%d", i+1);
+    mqttPreset.addOption(buffer);
+
     mqttConfigPresets[i].setPattern("[0-9]+");
     mqttConfigPresets[i].setMaxLetters(3);
     mqttConfigPresets[i].setIcon("mdi:human-male-height");
@@ -400,6 +419,8 @@ void setup()
     }
   }
   loadSettings();
+  g_desk.setMinHeight(g_minHeight);
+  g_desk.setMaxHeight(g_maxHeight);
 
   // init sensor value
   lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
@@ -425,6 +446,7 @@ void setup()
 bool state = true;
 void loop()
 {
+  // TODO: add logic for sleeping to save energy
   if (WiFi.status() != WL_CONNECTED)
   {
     connectToWifi();
@@ -491,7 +513,7 @@ void loop()
   // limit updates to configured frequency and update position and preset
   if (millis() - g_lastSensorHeightUpdate > MIN_UPDATE_RATE_MS && g_sensorHeightCm != g_lastSensorHeightCm)
   {
-    desk::Preset preset = calculatePreset(g_sensorHeightCm);
+    uint8_t preset = calculatePreset(g_sensorHeightCm, g_desk.getTargetAccuracyCm());
     if (preset != g_preset)
     {
       log_info("Reached height of preset %d", g_preset);
